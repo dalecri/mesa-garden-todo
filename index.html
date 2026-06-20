@@ -107,6 +107,13 @@ body::after{
 .ap-seg.filled{background:var(--seg-color,#e67e22)}
 .ap-seg.peak{box-shadow:0 0 8px var(--seg-color,#e67e22)}
 .ap-segs:active .ap-seg{transform:scaleY(1.15)}
+
+.ap-toggle-row { flex-direction: row; align-items: center; justify-content: space-between; padding: 10px 0; }
+.ap-toggle-track { width:36px; height:20px; border-radius:10px; background:rgba(255,255,255,.1); cursor:pointer; transition:background .2s; position:relative; flex-shrink:0; -webkit-tap-highlight-color:transparent; }
+.ap-toggle-track.on { background:var(--g-accent); }
+.ap-toggle-knob { width:16px; height:16px; background:#fff; border-radius:50%; position:absolute; top:2px; left:2px; transition:transform .2s; box-shadow:0 1px 3px rgba(0,0,0,.3); }
+.ap-toggle-track.on .ap-toggle-knob { transform:translateX(16px); }
+
 .ap-reset{
   margin-top:10px;width:100%;padding:7px;border-radius:10px;
   font-family:var(--mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;
@@ -260,7 +267,7 @@ body::after{
 <div id="todo-panel" class="hidden"><div id="todo-list"></div></div>
  
 <div id="task-bar">
-  <input id="task-input" type="text" placeholder="plant a new cactus..." maxlength="120" autocomplete="off" spellcheck="false">
+  <input id="task-input" type="text" placeholder="carve a new totem..." maxlength="120" autocomplete="off" spellcheck="false">
   <button id="task-submit" title="Add task">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M5 12h14M12 5l7 7-7 7"/>
@@ -312,7 +319,38 @@ window.addEventListener('resize',()=>{
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#78A7FF'); // Minecraft Day Sky
 scene.fog = new THREE.Fog('#78A7FF', 80, 350); // Linear blocky fog
- 
+
+// == Sky Dome ==
+const skyGeo = new THREE.SphereGeometry(300, 32, 15);
+const skyMat = new THREE.ShaderMaterial({
+  uniforms: {
+    topColor: { value: new THREE.Color('#78A7FF') },
+    bottomColor: { value: new THREE.Color('#b3d4ff') }
+  },
+  vertexShader: `
+    varying vec3 vWorldPosition;
+    void main() {
+      vec4 worldPosition = modelMatrix * vec4( position, 1.0 );
+      vWorldPosition = worldPosition.xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+    }
+  `,
+  fragmentShader: `
+    uniform vec3 topColor;
+    uniform vec3 bottomColor;
+    varying vec3 vWorldPosition;
+    void main() {
+      float h = normalize(vWorldPosition).y;
+      vec3 col = mix(bottomColor, topColor, max(pow(max(h, 0.0), 0.8), 0.0));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+  side: THREE.BackSide,
+  fog: false
+});
+const skyDome = new THREE.Mesh(skyGeo, skyMat);
+scene.add(skyDome);
+
 // == Camera ==
 const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.5, 400);
 camera.position.set(0, 55, 90);
@@ -351,7 +389,7 @@ nightFill.position.set(0, 18, 0);
 scene.add(nightFill);
  
 // == Ambience settings ==
-const AMB = { brightness: 1.0, fogDensity: 1.0 };
+const AMB = { brightness: 1.0, fogDensity: 1.0, clouds: true };
 const FOG_BASE = 350; // Using linear fog now
 const WATER_LEVEL = 4; // Raised water level to fill the reservoir more
  
@@ -403,22 +441,33 @@ const getH = (x,z) => terrain.get(`${Math.round(x)},${Math.round(z)}`) ?? 0;
 function getMesaHeight(x, z) {
   // Base rolling hills
   let base = 8 + Math.sin(x*0.06)*5 + Math.cos(z*0.07)*5;
-  // Large plateau features
   let n = Math.sin(x*0.02) * Math.cos(z*0.02) * 20;
-  let h = base + Math.abs(n);
+  let baseH = base + Math.abs(n);
   
-  const d = Math.sqrt(x*x + z*z);
+  let d = Math.sqrt(x*x + z*z);
   
-  // NEW: Oasis Pond Logic with asymmetrical, organic curvature
+  // Oasis Pond Logic
   let shapeDistortion = Math.sin(x * 0.12 + 2) * 3 + Math.sin(z * 0.18 + x * 0.05) * 2.5;
-  let pondRadius = 14 + shapeDistortion;
+  let pondRadius = 12 + shapeDistortion;
+  let distToPond = d - pondRadius;
   
-  if (d < pondRadius) {
-    if (d < pondRadius - 6) {
-      h = 1; // Deep center
+  // Stream/River Logic flowing into the pond
+  let riverWiggle = Math.sin(z * 0.08) * 8 + Math.cos(z * 0.03) * 5;
+  let baseRiverWidth = 3.5 + Math.sin(z * 0.1) * 1.5;
+  // The river is wider near the center and thins out slightly at the edges of the map
+  let riverWidth = Math.max(0.5, baseRiverWidth - (d * 0.04));
+  let distToRiver = Math.abs(x - riverWiggle) - riverWidth;
+  
+  // Union of the two water features
+  let waterDist = Math.min(distToPond, distToRiver);
+  
+  let h = baseH;
+  if (waterDist < 8) {
+    if (waterDist < 0) {
+      h = 1 + Math.max(0, Math.floor(waterDist + 3)); // Deepens nicely
     } else {
-      // Stepped shore towards the edges of the pond
-      h = 1 + Math.floor((d - (pondRadius - 6)) / 2) * 2;
+      let shoreH = 4 + Math.floor(waterDist / 1.5) * 2;
+      h = Math.min(baseH, shoreH);
     }
   }
   
@@ -426,7 +475,7 @@ function getMesaHeight(x, z) {
   if (Math.sin(x*0.3 + z*0.2) > 0.7) h += 1;
   
   // Circular Basin Effect (Mountains wrapping around)
-  const BOWL_START = 22; // Pushed outward slightly to accommodate the pond
+  const BOWL_START = 22; 
   if (d > BOWL_START) {
     // Increase height radially, stepped by 3 for mesa terracing look
     let radialBoost = Math.pow((d - BOWL_START) * 0.18, 1.5) * 2.5;
@@ -480,14 +529,20 @@ function buildTerrain(){
         let hex = BANDS[bandKey];
  
         // --- OASIS LUSH LOGIC ---
-        const distToCenter = Math.sqrt(x*x + z*z);
+        let distToCenter = Math.sqrt(x*x + z*z);
         let shapeDistortion = Math.sin(x * 0.12 + 2) * 3 + Math.sin(z * 0.18 + x * 0.05) * 2.5;
-        let lushRadius = 18 + shapeDistortion;
+        let distToPond = distToCenter - (12 + shapeDistortion);
         
-        // Only apply greenery to top blocks near the water level around the pond
-        if (y === h && h > WATER_LEVEL && h <= WATER_LEVEL + 5 && distToCenter < lushRadius) {
+        let riverWiggle = Math.sin(z * 0.08) * 8 + Math.cos(z * 0.03) * 5;
+        let riverWidth = Math.max(0.5, (3.5 + Math.sin(z * 0.1) * 1.5) - (distToCenter * 0.04));
+        let distToRiver = Math.abs(x - riverWiggle) - riverWidth;
+        
+        let waterDist = Math.min(distToPond, distToRiver);
+        
+        // Only apply greenery to top blocks near the water level around the features
+        if (y === h && h > WATER_LEVEL && h <= WATER_LEVEL + 6 && waterDist < 8) {
           // Fade out the lushness the further we get from the water
-          let lushChance = 1.0 - ((distToCenter - (lushRadius - 10)) / 10);
+          let lushChance = 1.0 - (Math.max(0, waterDist) / 8);
           
           if (Math.random() < lushChance) {
             hex = Math.random() > 0.3 ? '#668f45' : '#517a36'; // Voxel grass colors
@@ -540,7 +595,7 @@ function buildTerrain(){
   }
 }
  
-// == Task Trees (Voxel Cacti) ==
+// == Task Trees (Voxel Totem Poles) ==
 const TREE_POOL = [
   [18,12], [-14,-18], [22,-8], [-20,10], 
   [10,-24], [26,18], [-24,-16], [8,22], 
@@ -551,67 +606,110 @@ const TREE_POOL = [
 const taskTrees = [];
 const taskFlowers = [];
 const treeSpawnTimes = {};
+
+// Base materials to clone from so each totem can have independent hover glows
+const TOTEM_COLORS = [
+  new THREE.MeshStandardMaterial({color:'#902010', roughness:0.9}), // Red
+  new THREE.MeshStandardMaterial({color:'#1b5e55', roughness:0.9}), // Teal
+  new THREE.MeshStandardMaterial({color:'#c0c0c0', roughness:0.9}), // White
+  new THREE.MeshStandardMaterial({color:'#c28821', roughness:0.9})  // Gold/Yellow
+];
  
-function spawnTaskCactus(x, z, todo){
+function spawnTaskTotem(x, z, todo){
   const y = getH(x, z);
   const g = new THREE.Group();
+  
+  // Point the totem towards the center of the oasis pond (0,0)
+  const angleToCenter = Math.atan2(0 - x, 0 - z);
+  g.rotation.y = angleToCenter;
  
-  const cactusMat = getVoxelMat('#557a2b');
-  const flowerMat = new THREE.MeshStandardMaterial({color:'#ff9900', emissive:'#cc5500', emissiveIntensity:0.2, roughness:0.8});
+  const woodMat = getVoxelMat('#4a3018'); // Dark carved wood
+  const hoverMats = [];
+
+  // Generate unique materials for this specific totem's painted sections
+  const mats = TOTEM_COLORS.map(mat => mat.clone());
+  const seed = todo.id || 1;
  
-  // Voxel Trunk
-  for(let i=1; i<=3; i++){
-    const b = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), cactusMat);
-    b.position.set(0, i - 0.5, 0); // rest on top of block
-    b.castShadow = true; b.receiveShadow = true;
-    g.add(b);
-  }
+  // Base wood block
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), woodMat);
+  base.position.set(0, 0, 0); 
+  base.castShadow = true; base.receiveShadow = true;
+  g.add(base);
  
-  // Random arm
-  if(Math.random() > 0.5) {
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), cactusMat);
-    arm.position.set(0.8, 1.5, 0);
-    arm.castShadow = true; arm.receiveShadow = true;
-    g.add(arm);
-    // Flower on arm
-    const f = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), flowerMat);
-    f.position.set(0.8, 2.2, 0);
-    g.add(f);
+  // Middle sections (Body)
+  const midMat1 = mats[seed % 4];
+  const midMat2 = mats[(seed + 1) % 4];
+  hoverMats.push(midMat1, midMat2);
+
+  const mid1 = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), midMat1);
+  mid1.position.set(0, 1, 0);
+  mid1.castShadow = true; mid1.receiveShadow = true;
+  g.add(mid1);
+
+  const mid2 = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), midMat2);
+  mid2.position.set(0, 2, 0);
+  mid2.castShadow = true; mid2.receiveShadow = true;
+  g.add(mid2);
+
+  // Top section (Head)
+  const topMat = mats[(seed + 2) % 4];
+  hoverMats.push(topMat);
+  const top = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), topMat);
+  top.position.set(0, 3, 0);
+  top.castShadow = true; top.receiveShadow = true;
+  g.add(top);
+
+  // Randomize embellishments (Wings vs Beak)
+  if (seed % 2 === 0) {
+    const wingMat = mats[(seed + 3) % 4];
+    hoverMats.push(wingMat);
+    
+    const wingGeo = new THREE.BoxGeometry(1.2, 0.4, 0.2);
+    const wingL = new THREE.Mesh(wingGeo, wingMat);
+    wingL.position.set(-1, 2.2, 0);
+    wingL.castShadow = true;
+    g.add(wingL);
+
+    const wingR = new THREE.Mesh(wingGeo, wingMat);
+    wingR.position.set(1, 2.2, 0);
+    wingR.castShadow = true;
+    g.add(wingR);
   } else {
-    // Flower on top
-    const f = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), flowerMat);
-    f.position.set(0, 2.7, 0);
-    g.add(f);
+    // Thunderbird beak
+    const beakMat = mats[3]; // Yellow/Gold
+    hoverMats.push(beakMat);
+    const beak = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.6), beakMat);
+    beak.position.set(0, 3.2, 0.5);
+    beak.castShadow = true;
+    g.add(beak);
   }
  
-  // Invisible hit sphere
-  const hitMesh = new THREE.Mesh(new THREE.BoxGeometry(2.5, 4, 2.5), new THREE.MeshBasicMaterial({visible:false}));
+  // Invisible hit sphere expanded for the taller totem
+  const hitMesh = new THREE.Mesh(new THREE.BoxGeometry(3.5, 4.5, 2.5), new THREE.MeshBasicMaterial({visible:false}));
   hitMesh.position.y = 1.5; g.add(hitMesh);
  
   g.position.set(x, y + 0.5, z); // shift up to sit exactly on block
+  
   const isNew = !(todo.id in treeSpawnTimes);
   if(isNew) treeSpawnTimes[todo.id] = performance.now();
   g.scale.setScalar(isNew ? 0.001 : 1);
   scene.add(g);
  
-  const entry = { group:g, canopyMats: [flowerMat], hitMesh, todo, spawnedAt: treeSpawnTimes[todo.id] };
+  const entry = { group:g, hoverMats: hoverMats, hitMesh, todo, spawnedAt: treeSpawnTimes[todo.id] };
   hitMesh.userData.treeEntry = entry;
   taskTrees.push(entry);
   return entry;
 }
  
-function spawnTaskBarrelCactus(x, z, todo){
+function spawnTaskStump(x, z, todo){
   const y = getH(x, z);
   const g = new THREE.Group();
  
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), getVoxelMat('#557a2b'));
+  const woodMat = getVoxelMat('#4a3018');
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), woodMat);
   body.position.y = 0.4;
   body.castShadow = true; body.receiveShadow = true;
   g.add(body);
- 
-  const flowerMat = new THREE.MeshStandardMaterial({color:'#ff5555', emissive:'#cc2222', emissiveIntensity:0.35, roughness:0.8});
-  const flower = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), flowerMat);
-  flower.position.y = 0.95; g.add(flower);
  
   g.position.set(x, y + 0.5, z);
   scene.add(g);
@@ -633,9 +731,9 @@ function buildTaskTrees(){
     const nz = validPool[i][1] + Math.round(((seed*6271)%100)/100 - 0.5);
     if(getH(nx,nz) <= WATER_LEVEL) return;
     if(t.done){
-      spawnTaskBarrelCactus(nx, nz, t);
+      spawnTaskStump(nx, nz, t);
     } else {
-      spawnTaskCactus(nx, nz, t);
+      spawnTaskTotem(nx, nz, t);
     }
   });
   buildPersistentLabels();
@@ -659,7 +757,7 @@ function buildPersistentLabels(){
   taskTrees.forEach(entry=>{
     const el = document.createElement('div');
     el.className = 'tree-label';
-    el.textContent = '🌵 ' + entry.todo.text;
+    el.textContent = '🗿 ' + entry.todo.text;
     document.body.appendChild(el);
     persistentLabels.push({el, entry});
   });
@@ -669,7 +767,7 @@ function updatePersistentLabelPositions(){
   if(!labelsAlwaysOn || persistentLabels.length===0) return;
   const v = new THREE.Vector3();
   persistentLabels.forEach(({el, entry})=>{
-    v.set(entry.group.position.x, entry.group.position.y + 3.5, entry.group.position.z);
+    v.set(entry.group.position.x, entry.group.position.y + 4.5, entry.group.position.z);
     v.project(camera);
     const behindCamera = v.z > 1;
     const x = (v.x*0.5+0.5)*innerWidth;
@@ -715,7 +813,7 @@ function onPointerMove(e){
     }
     tooltip.style.left = (clientX + 14) + 'px';
     tooltip.style.top  = (clientY - 12) + 'px';
-    tooltip.textContent = '🌵 ' + entry.todo.text;
+    tooltip.textContent = '🗿 ' + entry.todo.text;
     tooltip.classList.remove('hidden');
     canvas.style.cursor = 'pointer';
   } else {
@@ -726,9 +824,9 @@ function onPointerMove(e){
 }
  
 function setTreeHover(entry, on){
-  entry.canopyMats.forEach(m=>{
-    m.emissiveIntensity = on ? 0.8 : 0.2;
-    m.emissive.set(on ? '#ffcc00' : '#cc5500');
+  entry.hoverMats.forEach(m=>{
+    m.emissiveIntensity = on ? 0.3 : 0.0;
+    m.emissive.set(on ? m.color : '#000000');
   });
 }
  
@@ -841,16 +939,71 @@ function createRocks(){
   mesh.count=placed; mesh.instanceMatrix.needsUpdate=true;
   scene.add(mesh);
 }
- 
+
+// == Voxel Clouds ==
+const cloudGeo = new THREE.BoxGeometry(1, 1, 1);
+const cloudMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  roughness: 1.0,
+  flatShading: true,
+  transparent: true,
+  opacity: 0.95
+});
+const CLOUD_COUNT = 35;
+const cloudMesh = new THREE.InstancedMesh(cloudGeo, cloudMat, CLOUD_COUNT);
+const cloudData = [];
+const cloudDummy = new THREE.Object3D();
+
+for (let i = 0; i < CLOUD_COUNT; i++) {
+  let x = (Math.random() - 0.5) * 300;
+  let z = (Math.random() - 0.5) * 300;
+  let y = 45 + Math.random() * 25;
+  let sx = 8 + Math.random() * 18;
+  let sy = 2 + Math.random() * 3;
+  let sz = 8 + Math.random() * 18;
+  let speed = 0.5 + Math.random() * 1.5;
+
+  cloudData.push({ x, y, z, sx, sy, sz, speed });
+}
+scene.add(cloudMesh);
+
 // == Time of day ==
 function applyTime(){
   const now=new Date(), hour=now.getHours()+now.getMinutes()/60;
   let day; if(hour<5)day=0; else if(hour<7)day=(hour-5)/2; else if(hour<18)day=1; else if(hour<20)day=1-(hour-18)/2; else day=0;
   const night=1-day;
   
-  // Minecraft Sky Transitions
-  const sky=new THREE.Color().lerpColors(new THREE.Color('#0B0D17'),new THREE.Color('#78A7FF'),day);
-  scene.background=sky; scene.fog.color.copy(sky);
+  // Multi-stop sky transitions
+  const stops = [
+    { h: 0,   t: '#05070a', b: '#121422', f: '#0b0d17' },
+    { h: 5,   t: '#05070a', b: '#121422', f: '#0b0d17' },
+    { h: 6.5, t: '#3a5a80', b: '#ff9955', f: '#d07a44' }, // Sunrise
+    { h: 8,   t: '#5887ff', b: '#b3d4ff', f: '#78a7ff' }, // Day
+    { h: 17,  t: '#5887ff', b: '#b3d4ff', f: '#78a7ff' }, // Day
+    { h: 19,  t: '#2a3a5a', b: '#e66b35', f: '#8a4b35' }, // Sunset
+    { h: 20.5,t: '#05070a', b: '#121422', f: '#0b0d17' },
+    { h: 24,  t: '#05070a', b: '#121422', f: '#0b0d17' }
+  ];
+
+  let s1 = stops[0], s2 = stops[stops.length-1];
+  for(let i=0; i<stops.length-1; i++) {
+    if(hour >= stops[i].h && hour <= stops[i+1].h) {
+      s1 = stops[i]; s2 = stops[i+1]; break;
+    }
+  }
+  let progress = (hour - s1.h) / (s2.h - s1.h);
+  if(isNaN(progress)) progress = 0;
+
+  const topCol = new THREE.Color(s1.t).lerp(new THREE.Color(s2.t), progress);
+  const botCol = new THREE.Color(s1.b).lerp(new THREE.Color(s2.b), progress);
+  const fogCol = new THREE.Color(s1.f).lerp(new THREE.Color(s2.f), progress);
+
+  if (typeof skyMat !== 'undefined') {
+    skyMat.uniforms.topColor.value.copy(topCol);
+    skyMat.uniforms.bottomColor.value.copy(botCol);
+  }
+  scene.fog.color.copy(fogCol);
+  scene.background = fogCol;
   
   // Adjust light intensity
   hemi.intensity = night * 0.2 + day * 0.7;
@@ -966,6 +1119,28 @@ SLIDERS.forEach(({key,label,min,max,fmt,color})=>{
   segsEl.addEventListener('pointercancel',()=>{ dragging=false; });
 });
  
+// Clouds Toggle
+const cloudRow = document.createElement('div'); 
+cloudRow.className = 'ap-row ap-toggle-row';
+cloudRow.innerHTML = `
+  <div class="ap-lbl" style="width:100%; margin-right:12px;">
+    <span>Clouds</span>
+    <span class="ap-val" id="v-clouds">ON</span>
+  </div>
+  <div class="ap-toggle-track on" id="t-clouds">
+    <div class="ap-toggle-knob"></div>
+  </div>`;
+apRows.appendChild(cloudRow);
+
+const cloudTrack = document.getElementById('t-clouds');
+const cloudVal = document.getElementById('v-clouds');
+cloudTrack.addEventListener('click', () => {
+  AMB.clouds = !AMB.clouds;
+  cloudTrack.classList.toggle('on', AMB.clouds);
+  cloudVal.textContent = AMB.clouds ? 'ON' : 'OFF';
+  cloudMesh.visible = AMB.clouds;
+});
+
 document.getElementById('ap-reset').addEventListener('click', ()=>{
   Object.assign(AMB,defaults);
   SLIDERS.forEach(({key,min,max,fmt})=>{
@@ -977,6 +1152,11 @@ document.getElementById('ap-reset').addEventListener('click', ()=>{
       seg.classList.toggle('peak', i === n-1);
     });
   });
+  
+  cloudTrack.classList.toggle('on', AMB.clouds);
+  cloudVal.textContent = AMB.clouds ? 'ON' : 'OFF';
+  cloudMesh.visible = AMB.clouds;
+
   applyTime();
 });
  
@@ -1067,7 +1247,7 @@ function renderTodos(){
   const list = document.getElementById('todo-list');
   list.innerHTML = '';
   if(todos.length === 0){
-    list.innerHTML = `<div id="td-empty">Nothing planted yet - type a task below and hit enter.</div>`;
+    list.innerHTML = `<div id="td-empty">No totems carved yet. Type a task below and hit enter.</div>`;
     return;
   }
   todos.forEach((t,i)=>{
@@ -1075,7 +1255,7 @@ function renderTodos(){
     item.className = 'td-item' + (t.done?' done':'');
     const dateLabel = t.done && t.completedAt
       ? `Completed ${fmtDate(t.completedAt)}`
-      : `Planted ${fmtDate(t.createdAt || t.id)}`;
+      : `Carved ${fmtDate(t.createdAt || t.id)}`;
     item.innerHTML = `
       <div class="td-check">${t.done?'✓':''}</div>
       <div class="td-body">
@@ -1150,7 +1330,7 @@ function animate(){
   if(IS_MOBILE && frameN%2!==0) return;
   const elapsed=clock.getElapsedTime();
  
-  // Grow-in animation for freshly planted cacti
+  // Grow-in animation for freshly planted totems
   const now = performance.now();
   taskTrees.forEach(entry=>{
     if(entry.group.scale.x < 0.999){
@@ -1161,6 +1341,19 @@ function animate(){
     }
   });
  
+  // Voxel clouds drifting
+  if (cloudMesh.visible) {
+    cloudData.forEach((c, i) => {
+      c.x += c.speed * 0.05;
+      if (c.x > 150) c.x = -150;
+      cloudDummy.position.set(c.x, c.y, c.z);
+      cloudDummy.scale.set(c.sx, c.sy, c.sz);
+      cloudDummy.updateMatrix();
+      cloudMesh.setMatrixAt(i, cloudDummy.matrix);
+    });
+    cloudMesh.instanceMatrix.needsUpdate = true;
+  }
+
   updatePersistentLabelPositions();
   
   // Adjust fog distance based on density slider
