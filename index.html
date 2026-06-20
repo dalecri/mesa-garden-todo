@@ -300,21 +300,21 @@ window.addEventListener('resize',()=>{
 // == Scene ==
 const scene = new THREE.Scene();
 scene.background = new THREE.Color('#78A7FF'); // Minecraft Day Sky
-scene.fog = new THREE.Fog('#78A7FF', 50, 150); // Linear blocky fog
+scene.fog = new THREE.Fog('#78A7FF', 80, 350); // Linear blocky fog
 
 // == Camera ==
 const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.5, 400);
-camera.position.set(0, 35, 75);
+camera.position.set(0, 55, 90);
 
 // == Controls ==
 const controls = new OrbitControls(camera, canvas);
-controls.target.set(0, 10, 0);
+controls.target.set(0, 15, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
-controls.minDistance = 20;
-controls.maxDistance = 110;
+controls.minDistance = 30;
+controls.maxDistance = 140;
 controls.zoomSpeed = 0.17;
-controls.maxPolarAngle = Math.PI * 0.52;
+controls.maxPolarAngle = Math.PI * 0.42;
 controls.update();
 
 // == Lighting ==
@@ -323,12 +323,12 @@ scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff5e6, 1.4);
 sun.position.set(60, 100, -40);
 sun.castShadow = true;
-sun.shadow.camera.left = -60;
-sun.shadow.camera.right = 60;
-sun.shadow.camera.top = 60;
-sun.shadow.camera.bottom = -60;
+sun.shadow.camera.left = -75;
+sun.shadow.camera.right = 75;
+sun.shadow.camera.top = 75;
+sun.shadow.camera.bottom = -75;
 sun.shadow.camera.near = 0.5;
-sun.shadow.camera.far = 200;
+sun.shadow.camera.far = 250;
 sun.shadow.bias = -0.001;
 sun.shadow.mapSize.width = 2048;
 sun.shadow.mapSize.height = 2048;
@@ -341,7 +341,8 @@ scene.add(nightFill);
 
 // == Ambience settings ==
 const AMB = { brightness: 1.0, fogDensity: 1.0, rain: false, wind: false };
-const FOG_BASE = 150; // Using linear fog now
+const FOG_BASE = 350; // Using linear fog now
+const WATER_LEVEL = 4; // Raised water level to fill the reservoir more
 
 // == Shared Materials (Minecraft colors based on image) ==
 const BANDS = {
@@ -395,25 +396,35 @@ function getMesaHeight(x, z) {
   let n = Math.sin(x*0.02) * Math.cos(z*0.02) * 20;
   let h = base + Math.abs(n);
   
-  // Winding River
-  let riverPath = Math.sin(z * 0.05) * 12;
-  let dist = Math.abs(x - riverPath);
-  
-  if (dist < 4) {
-    h = 2; // River bed (water level will be 3)
-  } else if (dist < 12) {
-    // Stepped cliffs matching image
-    h = 2 + Math.floor((dist - 4) / 1.5) * 3; 
+  // NEW: Circular Basin Effect (Mountains wrapping around)
+  const d = Math.sqrt(x*x + z*z);
+  const BOWL_START = 18; // Keep the center flat, start curving up past this radius
+  if (d > BOWL_START) {
+    // Increase height radially, stepped by 3 for mesa terracing look
+    let radialBoost = Math.pow((d - BOWL_START) * 0.18, 1.3) * 2.5; // softened curve
+    h += Math.floor(radialBoost / 3) * 3;
   }
   
   // Add some random noise bumps on top
   if (Math.sin(x*0.3 + z*0.2) > 0.7) h += 1;
+
+  // Winding River - Calculate cut AFTER radial bowl so canyon walls don't warp into sky-peaks
+  let riverPath = Math.sin(z * 0.05) * 12;
+  let dist = Math.abs(x - riverPath);
+  
+  if (dist < 4) {
+    h = 2; // River bed
+  } else if (dist < 12) {
+    // Stepped cliffs matching image
+    let canyonH = 2 + Math.floor((dist - 4) / 1.5) * 3; 
+    h = Math.min(h, canyonH); // Carve down
+  }
   
   return Math.floor(h);
 }
 
 function buildTerrain(){
-  const SIZE = IS_MOBILE ? 35 : 45;
+  const SIZE = IS_MOBILE ? 40 : 50;
   const blocks = {}; // Organize by color hex
   const waterBlocks = [];
 
@@ -435,8 +446,8 @@ function buildTerrain(){
       let h = getH(x, z);
 
       // Add water layer
-      if (h <= 3) {
-        for(let wy=h; wy<=3; wy++){
+      if (h <= WATER_LEVEL) {
+        for(let wy=h; wy<=WATER_LEVEL; wy++){
           waterBlocks.push({x, y:wy, z});
         }
       }
@@ -454,6 +465,29 @@ function buildTerrain(){
         let bandKey = y % 17;
         if(bandKey < 0) bandKey += 17;
         let hex = BANDS[bandKey];
+
+        // --- OASIS LUSH LOGIC ---
+        // Calculate dynamic center of the river
+        let riverCenter = Math.sin(z * 0.05) * 12;
+        let distToRiver = Math.abs(x - riverCenter);
+        
+        // Only apply greenery to top blocks, on the positive X side, near the water level
+        if (y === h && x > riverCenter && h > WATER_LEVEL && h <= WATER_LEVEL + 5 && distToRiver < 16) {
+          // Fade out the lushness the further we get from the water
+          let lushChance = 1.0 - ((distToRiver - 4) / 12);
+          
+          if (Math.random() < lushChance) {
+            hex = Math.random() > 0.3 ? '#668f45' : '#517a36'; // Voxel grass colors
+            
+            // Occasionally stack a dark green block on top to act as a voxel bush
+            if (Math.random() < 0.06) {
+              let bushHex = '#3a5a22';
+              if (!blocks[bushHex]) blocks[bushHex] = [];
+              blocks[bushHex].push({x, y: h + 1, z});
+            }
+          }
+        }
+        // ------------------------
 
         if (!blocks[hex]) blocks[hex] = [];
         blocks[hex].push({x, y, z});
@@ -571,14 +605,14 @@ function buildTaskTrees(){
   taskFlowers.forEach(f=>scene.remove(f.group));
   taskFlowers.length = 0;
 
-  const validPool = TREE_POOL.filter(([x,z])=> getH(x,z) > 3); // Must be above water
+  const validPool = TREE_POOL.filter(([x,z])=> getH(x,z) > WATER_LEVEL); // Must be above water
 
   todos.forEach((t, i)=>{
     if(i >= validPool.length) return;
     const seed = (t.id || i+1);
     const nx = validPool[i][0] + Math.round(((seed*7919)%100)/100 - 0.5); // Integer pos
     const nz = validPool[i][1] + Math.round(((seed*6271)%100)/100 - 0.5);
-    if(getH(nx,nz) <= 3) return;
+    if(getH(nx,nz) <= WATER_LEVEL) return;
     if(t.done){
       spawnTaskBarrelCactus(nx, nz, t);
     } else {
@@ -685,7 +719,7 @@ window.addEventListener('touchmove',  onPointerMove, {passive:true});
 // == Voxel Torch ==
 function createRusticTorch(x,z){
   const y = getH(x,z);
-  if(y <= 3) return; // don't put in water
+  if(y <= WATER_LEVEL) return; // don't put in water
   const g=new THREE.Group();
   
   const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.6, 0.1), getVoxelMat('#5a3820'));
@@ -742,7 +776,7 @@ function createStringLights(ax,az,bx,bz,count=5){
 // == Dry Brush / Dead Bushes (Minecraft style) ==
 function createDeadBush(x, z) {
   const y = getH(x,z);
-  if(y <= 3) return; // Not in water
+  if(y <= WATER_LEVEL) return; // Not in water
   
   const g = new THREE.Group();
   const bushMat = getVoxelMat('#6b4c3a'); // Dark brown
@@ -762,7 +796,7 @@ function createDeadBush(x, z) {
 // == Voxel Firepit ==
 function createFirepit(x,z){
   const y = getH(x,z);
-  if(y <= 3) return;
+  if(y <= WATER_LEVEL) return;
   const g=new THREE.Group();
   
   // Ring of stone slabs
@@ -775,24 +809,6 @@ function createFirepit(x,z){
   
   const pLight = new THREE.PointLight('#ff8800', 2, 25);
   pLight.position.y = 1.0; g.add(pLight);
-
-  g.position.set(x, y + 0.5, z);
-  scene.add(g);
-}
-
-// == Voxel Adobe Ruin ==
-function createAdobeRuin(x,z){
-  const y = getH(x,z);
-  const g=new THREE.Group();
-  const mat = getVoxelMat('#d9652a'); // Use the orange sand material
-  
-  // Hollow U-shape
-  const left = new THREE.Mesh(new THREE.BoxGeometry(1, 3, 5), mat);
-  left.position.set(-2, 1.5, 0); left.castShadow=true; left.receiveShadow=true; g.add(left);
-  const right = new THREE.Mesh(new THREE.BoxGeometry(1, 3, 5), mat);
-  right.position.set(2, 1.5, 0); right.castShadow=true; right.receiveShadow=true; g.add(right);
-  const back = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 1), mat);
-  back.position.set(0, 1.5, -2); back.castShadow=true; back.receiveShadow=true; g.add(back);
 
   g.position.set(x, y + 0.5, z);
   scene.add(g);
@@ -811,7 +827,7 @@ function createRocks(){
     const x=Math.round((Math.random()-0.5)*60);
     const z=Math.round((Math.random()-0.5)*60);
     const y=getH(x,z);
-    if(y<=3) continue; // no rocks in water
+    if(y<=WATER_LEVEL) continue; // no rocks in water
     
     // Scale randomly but in blocky steps
     const sx = Math.random()>0.5?2:1;
@@ -890,7 +906,6 @@ for(let i=0; i<15; i++) {
   createDeadBush(Math.round((Math.random()-0.5)*40), Math.round((Math.random()-0.5)*40));
 }
 
-createAdobeRuin(-18,14);
 createFirepit(10, 10);
 
 createStringLights(3,0,16,8,IS_MOBILE?3:5);
