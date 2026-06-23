@@ -375,6 +375,7 @@ const skyMat = new THREE.ShaderMaterial({
   fog: false
 });
 const skyDome = new THREE.Mesh(skyGeo, skyMat);
+skyDome.matrixAutoUpdate = false; // never moves - skip per-frame matrix recompute
 scene.add(skyDome);
  
 // == Camera ==
@@ -624,6 +625,7 @@ function buildTerrain(){
       mesh.setMatrixAt(i, dummy.matrix);
     });
     mesh.instanceMatrix.needsUpdate = true;
+    mesh.matrixAutoUpdate = false; // mesh itself never moves - only its instance buffer matters
     scene.add(mesh);
   }
  
@@ -637,6 +639,7 @@ function buildTerrain(){
       wMesh.setMatrixAt(i, dummy.matrix);
     });
     wMesh.instanceMatrix.needsUpdate = true;
+    wMesh.matrixAutoUpdate = false;
     scene.add(wMesh);
   }
 }
@@ -898,6 +901,8 @@ function createRusticTorch(x,z){
   decorLights.push({light: pLight, base: 1});
  
   g.position.set(x, y + 0.5, z);
+  g.updateMatrix();
+  g.matrixAutoUpdate = false; // placed once, never moves
   scene.add(g);
 }
  
@@ -918,6 +923,8 @@ function createDeadBush(x, z) {
   b3.position.set(0, 0.3, 0); g.add(b3);
  
   g.position.set(x, y + 0.5, z);
+  g.updateMatrix();
+  g.matrixAutoUpdate = false;
   scene.add(g);
 }
  
@@ -940,6 +947,8 @@ function createFirepit(x,z){
   decorLights.push({light: pLight, base: 2});
  
   g.position.set(x, y + 0.5, z);
+  g.updateMatrix();
+  g.matrixAutoUpdate = false;
   scene.add(g);
 }
  
@@ -969,6 +978,7 @@ function createRocks(){
     dummy.updateMatrix(); mesh.setMatrixAt(placed++,dummy.matrix);
   }
   mesh.count=placed; mesh.instanceMatrix.needsUpdate=true;
+  mesh.matrixAutoUpdate = false;
   scene.add(mesh);
 }
  
@@ -997,6 +1007,7 @@ for (let i = 0; i < CLOUD_COUNT; i++) {
  
   cloudData.push({ x, y, z, sx, sy, sz, speed });
 }
+cloudMesh.matrixAutoUpdate = false; // mesh itself never moves, only instance buffer
 scene.add(cloudMesh);
  
 // == Rain — toggled via Ambience panel (Weather: Clear/Rain/Storm) ==========
@@ -1018,6 +1029,7 @@ const rainMat = new THREE.MeshStandardMaterial({
 const rainMesh = new THREE.InstancedMesh(rainGeo, rainMat, RAIN_COUNT);
 rainMesh.frustumCulled = false;
 rainMesh.visible = false; // hidden until toggled on
+rainMesh.matrixAutoUpdate = false; // mesh itself never moves, only instance buffer
 scene.add(rainMesh);
 // Plain typed arrays — no per-particle objects, very cheap to update every frame
 const rain = {
@@ -1364,9 +1376,16 @@ bPlank.position.set(0, 2.5, 0.1); boardGroup.add(bPlank);
  
 boardGroup.position.set(BOARD_X, getH(BOARD_X, BOARD_Z) + 0.5, BOARD_Z);
 boardGroup.rotation.y = Math.PI / 4;
+boardGroup.updateMatrix();
+boardGroup.matrixAutoUpdate = false; // post never moves; papers attached later still update normally
 scene.add(boardGroup);
  
 const paperMeshes = [];
+// Shared geometry + two shared materials - buildPapers() runs on every single
+// task add/check/delete, so reusing these avoids constant alloc/GC churn.
+const PAPER_GEO = new THREE.PlaneGeometry(0.4, 0.5);
+const PAPER_MAT_ACTIVE = new THREE.MeshStandardMaterial({ color: '#e0dfd5', roughness: 1.0 });
+const PAPER_MAT_DONE   = new THREE.MeshStandardMaterial({ color: '#a09080', roughness: 1.0 });
  
 function buildPapers(){
   paperMeshes.forEach(m=>boardGroup.remove(m));
@@ -1377,15 +1396,12 @@ function buildPapers(){
   const total = visible.length;
  
   visible.forEach((t, i)=>{
-    const mat = new THREE.MeshStandardMaterial({
-      color: t.done ? '#a09080' : '#e0dfd5',
-      roughness: 1.0,
-    });
+    const mat = t.done ? PAPER_MAT_DONE : PAPER_MAT_ACTIVE;
  
     const spreadX = total > 1 ? (i/(total-1)) * 2.4 - 1.2 : 0;
     const spreadY = 2.5 + (i%2 === 0 ? 0.1 : -0.1);
     
-    const paper = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.5), mat);
+    const paper = new THREE.Mesh(PAPER_GEO, mat);
     paper.position.set(spreadX, spreadY, 0.22);
     
     // Pixelated tilt
@@ -1414,11 +1430,11 @@ function fmtDate(ts){
  
 function renderTodos(){
   const list = document.getElementById('todo-list');
-  list.innerHTML = '';
   if(todos.length === 0){
     list.innerHTML = `<div id="td-empty">No cacti planted yet. Type a task below and hit enter.</div>`;
     return;
   }
+  const frag = document.createDocumentFragment();
   todos.forEach((t,i)=>{
     const item = document.createElement('div');
     item.className = 'td-item' + (t.done?' done':'');
@@ -1435,8 +1451,10 @@ function renderTodos(){
     item.querySelector('.td-check').addEventListener('click',()=>{ todos[i].done=!todos[i].done; todos[i].completedAt=todos[i].done?Date.now():null; saveTodos(); renderTodos(); });
     item.querySelector('.td-text').addEventListener('click',()=>{ todos[i].done=!todos[i].done; todos[i].completedAt=todos[i].done?Date.now():null; saveTodos(); renderTodos(); });
     item.querySelector('.td-del').addEventListener('click',e=>{ e.stopPropagation(); delete treeSpawnTimes[todos[i].id]; todos.splice(i,1); saveTodos(); renderTodos(); });
-    list.appendChild(item);
+    frag.appendChild(item);
   });
+  list.innerHTML = '';
+  list.appendChild(frag);
 }
  
 function addTodo(){
